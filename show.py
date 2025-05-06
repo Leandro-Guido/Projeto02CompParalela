@@ -1,26 +1,26 @@
-import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
-x = "Frequency"
-y = "Monetary"
+# carregar os dados do K-Means (output.csv) com as colunas normalizadas
+df = pd.read_csv('output.csv', header=4, names=['longitude', 'latitude', 'median_house_value', 'cluster'])
 
-# Before clustering
-# df = pd.read_csv("OnlineRetail.csv", encoding="ISO-8859-1")
-# df = df[[x, y]]
-# df = df.dropna()
+# criar um gráfico 3D
+fig = plt.figure(figsize=(10, 7))
+ax = fig.add_subplot(111, projection='3d')
 
-# sns.scatterplot(x=df[x], y=df[y])
-# plt.title(f"Scatterplot of {y} (y) vs {x} (x)")
+# plotar os pontos com diferentes cores por cluster
+scatter = ax.scatter(df['longitude'], df['latitude'], df['median_house_value'], c=df['cluster'], cmap='viridis')
 
-# After clustering
-plt.figure()
-df = pd.read_csv("output.csv")
-sns.scatterplot(x=df.Frequency, y=df.Monetary, 
-                hue=df.Cluster, 
-                palette=sns.color_palette("hls", n_colors=5))
-plt.xlabel(x)
-plt.ylabel(y)
-plt.title(f"Clustered: {y} (y) vs {x} (x)")
+# adicionar título e rótulos aos eixos
+ax.set_title('K-Means Clustering em 3D')
+ax.set_xlabel('Longitude')
+ax.set_ylabel('Latitude')
+ax.set_zlabel('Median House Value')
 
+# adicionar barra de cores
+cbar = fig.colorbar(scatter)
+cbar.set_label('Cluster')
+
+# exibir o gráfico
 plt.show()
