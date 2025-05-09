@@ -10,6 +10,9 @@
 #include <cmath>
 #include "NeuralNetwork.h"
 #include <omp.h>
+#include <mpi.h>
+#include <cstdlib> // Para rand, srand
+#include <ctime>   // Para time
 
 std::vector<std::vector<float>> load_csv_data(std::string filename);
 std::vector<float> evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden);
@@ -27,9 +30,14 @@ float my_evaluate_network(std::vector<std::vector<float>> dataset, float test_ra
 * (See at the bottom for a second main function that's for displaying and testing a very small network.)
 */
 int main(int argc, char* argv[]) {
+	MPI_Init(&argc, &argv);
+
+	int numberOfProcess;
+	MPI_Comm_Size(MPI_COMM_WORLD, &numberOfProcess);
+
 	std::cout << "Neural Network with Backpropagation in C++ from scratch" << std::endl;
 	#ifdef _OPENMP
-		omp_set_num_threads(8);
+		omp_set_num_threads(4);
 	#endif
 
 	std::vector<std::vector<float>> csv_data;
@@ -61,97 +69,136 @@ int main(int argc, char* argv[]) {
 	std::vector<float> scores = evaluate_network(csv_data, n_folds, l_rate, n_epoch, n_hidden);
 
 	// calculate the mean average of the scores across each cross validation
-	float mean = std::accumulate(scores.begin(), scores.end(), decltype(scores)::value_type(0)) / static_cast<float>(scores.size());
+	float mean = scores / numberOfProcess * omp_get_num_threads();
 
 	std::cout << "Mean accuracy: " << mean << std::endl;
 
+	MPI_Finalize();
 	return 0;
 }
 
+std::vector<float> serialize_dataset(const std::vector<std::vector<std::vector<float>>>& data, std::vector<size_t>& dims) {
+    std::vector<float> buffer;
+    dims.clear();
+    dims.push_back(data.size()); // Número de splits
+    for (const auto& split : data) {
+        dims.push_back(split.size()); // Número de samples por split
+        for (const auto& sample : split) {
+            dims.push_back(sample.size()); // Número de floats por sample
+            buffer.insert(buffer.end(), sample.begin(), sample.end());
+        }
+    }
+    return buffer;
+}
+
+// Função para desserializar o dataset_splits (já fornecida anteriormente)
+std::vector<std::vector<std::vector<float>>> deserialize_dataset(const std::vector<float>& buffer, const std::vector<size_t>& dims) {
+    std::vector<std::vector<std::vector<float>>> data;
+    size_t buffer_index = 0;
+    size_t dims_index = 0;
+
+    if (dims.empty()) return data;
+
+    size_t num_splits = dims[dims_index++];
+    for (size_t f = 0; f < num_splits; ++f) {
+        std::vector<std::vector<float>> fold;
+        if (dims_index < dims.size()) {
+            size_t num_samples = dims[dims_index++];
+            for (size_t s = 0; s < num_samples; ++s) {
+                std::vector<float> sample;
+                if (dims_index < dims.size()) {
+                    size_t num_elements = dims[dims_index++];
+                    if (buffer_index + num_elements <= buffer.size()) {
+                        sample.insert(sample.end(), buffer.begin() + buffer_index, buffer.begin() + buffer_index + num_elements);
+                        buffer_index += num_elements;
+                    }
+                    fold.push_back(sample);
+                }
+            }
+        }
+        data.push_back(fold);
+    }
+    return data;
+}
+
 std::vector<float> evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden) {
+	int id, p;
+    MPI_Comm_rank(MPI_COMM_WORLD, &id);
+    MPI_Comm_size(MPI_COMM_WORLD, &p);
 
-	/* Split dataset into k folds */
-	std::vector<std::vector<std::vector<float>>> dataset_splits;
-	// initialize prng
-	std::srand(static_cast<unsigned int>(std::time(nullptr)));
-	
-	std::vector<float> scores;
-	
-	size_t fold_size = static_cast<unsigned int>(dataset.size() / n_folds);
+    std::vector<std::vector<std::vector<float>>> dataset_splits;
+    std::vector<float> send_buffer;
+    std::vector<size_t> dimensions;
+    size_t total_floats = 0;
+    size_t num_dimensions = 0;
 
-	for (int f = 0; f < n_folds; f++)
-	{
-		std::vector<std::vector<float>> fold;
-		while (fold.size() < fold_size) {
-			int n = rand() % dataset.size(); // get a random index
-			
-			// add the chosen element to the fold and remove it from the dataset
-			std::swap(dataset[n], dataset.back());
-			fold.push_back(dataset.back());
-			dataset.pop_back();
-		}
-		
-		dataset_splits.push_back(fold);
-	}
+    if (id == 0) {
+        /* Split dataset into k folds (apenas o processo 0) */
+        std::vector<std::vector<float>> local_dataset = dataset; // Crie uma cópia para modificar
+        size_t fold_size = static_cast<unsigned int>(local_dataset.size() / n_folds);
 
-	/* Iterate over folds */
-	// choose one as test and the rest as training sets
-	/*
-	 * Foi analisado pelo grupo que este seria o melhor ponto de paralelização, pois
-	 * ao paralelizar pontos do código "NeuralNetwork.cpp", considerando que as redes
-	 * utilizadas são pequenas, o overhead se torna maior do que o ganho esperado. Por
-	 * fim, este ponto do código, onde são utilizadas várias redes, se torna mais 
-	 * eficiente ao paralelizar, pois cada rede será executada em paralelo. 
-	*/
-	#pragma omp parallel for
-	for (size_t i = 0; i < dataset_splits.size(); i++)
-	{
-		std::vector<std::vector<std::vector<float>>> train_sets = dataset_splits;
-		std::swap(train_sets[i], train_sets.back());
-		std::vector<std::vector<float>> test_set = train_sets.back();
-		train_sets.pop_back();
-		
-		// merge the multiple train_sets into one train set
-		std::vector<std::vector<float>> train_set;
-		for (auto &s: train_sets)
-		{
-			for (auto& row : s) {
-				train_set.push_back(row);
-			}	
-		}
-		
-		// store the expected results
-		std::vector<int> expected;
-		for (auto& row: test_set)
-		{
-			expected.push_back(static_cast<int>(row.back()));
-			// just ensure that the actual result is not saved in the test data
-			row.back() = 42;
-		}
-		
-		std::vector<int> predicted;
-		
-		std::set<float> results;
-		for (const auto& r : train_set) {
-			results.insert(r.back());
-		}
-		int n_outputs = results.size();
-		int n_inputs = train_set[0].size() - 1;
-		
-		/* Backpropagation with stochastic gradient descent */
-		Network* network = new Network();
-		network->initialize_network(n_inputs, n_hidden, n_outputs);
-		network->train(train_set, l_rate, n_epoch, n_outputs);
-		
-		for (const auto& row: test_set)
-		{
-			predicted.push_back(network->predict(row));
-		}
-		
-		scores.push_back(accuracy_metric(expected, predicted));
-	}
+        for (int f = 0; f < n_folds; f++) {
+            std::vector<std::vector<float>> fold;
+            while (fold.size() < fold_size && !local_dataset.empty()) {
+                int n = rand() % local_dataset.size();
+                std::swap(local_dataset[n], local_dataset.back());
+                fold.push_back(local_dataset.back());
+                local_dataset.pop_back();
+            }
+            dataset_splits.push_back(fold);
+        }
 
-	return scores;
+        // Serializa e prepara para broadcast
+        send_buffer = serialize_dataset(dataset_splits, dimensions);
+        total_floats = send_buffer.size();
+        num_dimensions = dimensions.size();
+    }
+
+    // Broadcast do dataset_splits do processo 0 para todos os outros
+    MPI_Bcast(&total_floats, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&num_dimensions, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+
+    std::vector<float> recv_buffer(total_floats);
+    std::vector<size_t> received_dimensions(num_dimensions);
+
+    MPI_Bcast(recv_buffer.data(), total_floats, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(received_dimensions.data(), num_dimensions, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+
+    if (id != 0) {
+        dataset_splits = deserialize_dataset(recv_buffer, received_dimensions);
+    }
+
+    // Preparação para a parte paralela com OpenMP
+    float global_score = 0.0f;
+    std::vector<std::vector<float>> combined_fold;
+    for (const auto& fold : dataset_splits) {
+        combined_fold.insert(combined_fold.end(), fold.begin(), fold.end());
+    }
+    size_t num_samples = combined_fold.size();
+
+    // Paralelização com OpenMP
+    float local_score = 0.0f;
+    #pragma omp parallel reduction(+:local_score)
+    {
+        int thread_id = omp_get_thread_num();
+        int num_threads = omp_get_num_threads();
+
+        // Cada thread processa uma parte diferente dos dados
+        size_t start = thread_id * num_samples / num_threads;
+        size_t end = (thread_id + 1) * num_samples / num_threads;
+
+        for (size_t i = start; i < end; ++i) {
+            // Aqui, 'combined_fold[i]' representa um sample (um vetor de floats)
+            // Substitua esta linha pela sua lógica de cálculo que resulta em um score local
+            float sample_score = std::accumulate(combined_fold[i].begin(), combined_fold[i].end(), 0.0f);
+            local_score += sample_score;
+        }
+    }
+
+    // Reduce MPI para agregar os scores de todos os processos
+    MPI_Reduce(&local_score, &global_score, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
+
+	return global_score;
 }
 
 /*
