@@ -1,3 +1,10 @@
+/*
+ * Este código é a tentativa de implementação do MPI, porém
+ * não foi possível obter resultados dessa implementação, pois
+ * ao tentar executar o código, em todas as situações houve erros
+ * relacionados a memória, acessando endereços inválidos e aparentemente
+ * estourando a heap.
+*/
 #include <iostream>
 #include <vector>
 #include <set>
@@ -11,8 +18,8 @@
 #include "NeuralNetwork.h"
 #include <omp.h>
 #include <mpi.h>
-#include <cstdlib> // Para rand, srand
-#include <ctime>   // Para time
+#include <cstdlib>
+#include <ctime>
 
 std::vector<std::vector<float>> load_csv_data(std::string filename);
 float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden);
@@ -38,7 +45,7 @@ int main(int argc, char* argv[]) {
 	std::cout << "Neural Network with Backpropagation in C++ from scratch" << std::endl;
 
 	std::vector<std::vector<float>> csv_data;
-	csv_data = load_csv_data("adult.csv");
+	csv_data = load_csv_data("adult_menor.csv");
 
 	/*
 	* Normalize the last column (turning the outputs into values starting from 0 for the one-hot encoding in the end)
@@ -77,18 +84,17 @@ int main(int argc, char* argv[]) {
 std::vector<float> serialize_dataset(const std::vector<std::vector<std::vector<float>>>& data, std::vector<size_t>& dims) {
     std::vector<float> buffer;
     dims.clear();
-    dims.push_back(data.size()); // Número de splits
+    dims.push_back(data.size());
     for (const auto& split : data) {
-        dims.push_back(split.size()); // Número de samples por split
+        dims.push_back(split.size());
         for (const auto& sample : split) {
-            dims.push_back(sample.size()); // Número de floats por sample
+            dims.push_back(sample.size());
             buffer.insert(buffer.end(), sample.begin(), sample.end());
         }
     }
     return buffer;
 }
 
-// Função para desserializar o dataset_splits (já fornecida anteriormente)
 std::vector<std::vector<std::vector<float>>> deserialize_dataset(const std::vector<float>& buffer, const std::vector<size_t>& dims) {
     std::vector<std::vector<std::vector<float>>> data;
     size_t buffer_index = 0;
@@ -131,7 +137,7 @@ float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, flo
 
     if (id == 0) {
         /* Split dataset into k folds (apenas o processo 0) */
-        std::vector<std::vector<float>> local_dataset = dataset; // Crie uma cópia para modificar
+        std::vector<std::vector<float>> local_dataset = dataset;
         size_t fold_size = static_cast<unsigned int>(local_dataset.size() / n_folds);
 
         for (int f = 0; f < n_folds; f++) {
@@ -145,13 +151,11 @@ float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, flo
             dataset_splits.push_back(fold);
         }
 
-        // Serializa e prepara para broadcast
         send_buffer = serialize_dataset(dataset_splits, dimensions);
         total_floats = send_buffer.size();
         num_dimensions = dimensions.size();
     }
 
-    // Broadcast do dataset_splits do processo 0 para todos os outros
     MPI_Bcast(&total_floats, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
     MPI_Bcast(&num_dimensions, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
 
@@ -165,7 +169,6 @@ float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, flo
         dataset_splits = deserialize_dataset(recv_buffer, received_dimensions);
     }
 
-    // Preparação para a parte paralela com OpenMP
     float global_score = 0.0f;
     std::vector<std::vector<float>> combined_fold;
     for (const auto& fold : dataset_splits) {
@@ -173,26 +176,27 @@ float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, flo
     }
     size_t num_samples = combined_fold.size();
 
-    // Paralelização com OpenMP
     float local_score = 0.0f;
     #pragma omp parallel reduction(+:local_score)
     {
         int thread_id = omp_get_thread_num();
         int num_threads = omp_get_num_threads();
 
-        // Cada thread processa uma parte diferente dos dados
         size_t start = thread_id * num_samples / num_threads;
         size_t end = (thread_id + 1) * num_samples / num_threads;
+		std::vector<std::vector<std::vector<float>>> train_sets = dataset_splits;
+		std::vector<std::vector<float>> test_set = train_sets.back();
+		std::vector<std::vector<float>> train_set;
+		std::vector<int> expected;
+		std::vector<int> predicted;
+		std::set<float> results;
 
 		for (size_t i = start; i < end; i++)
 		{
-			std::vector<std::vector<std::vector<float>>> train_sets = dataset_splits;
 			std::swap(train_sets[i], train_sets.back());
-			std::vector<std::vector<float>> test_set = train_sets.back();
 			train_sets.pop_back();
 			
 			// merge the multiple train_sets into one train set
-			std::vector<std::vector<float>> train_set;
 			for (auto &s: train_sets)
 			{
 				for (auto& row : s) {
@@ -201,7 +205,6 @@ float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, flo
 			}
 			
 			// store the expected results
-			std::vector<int> expected;
 			for (auto& row: test_set)
 			{
 				expected.push_back(static_cast<int>(row.back()));
@@ -209,9 +212,6 @@ float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, flo
 				row.back() = 42;
 			}
 			
-			std::vector<int> predicted;
-			
-			std::set<float> results;
 			for (const auto& r : train_set) {
 				results.insert(r.back());
 			}
@@ -229,10 +229,10 @@ float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, flo
 			}
 			
 			local_score += accuracy_metric(expected, predicted);
+			delete network;
 		}
     }
 
-    // Reduce MPI para agregar os scores de todos os processos
     MPI_Reduce(&local_score, &global_score, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
 
 	return global_score;
