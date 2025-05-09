@@ -184,14 +184,7 @@ float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, flo
         size_t start = thread_id * num_samples / num_threads;
         size_t end = (thread_id + 1) * num_samples / num_threads;
 
-        for (size_t i = start; i < end; ++i) {
-            // Aqui, 'combined_fold[i]' representa um sample (um vetor de floats)
-            // Substitua esta linha pela sua lógica de cálculo que resulta em um score local
-            float sample_score = std::accumulate(combined_fold[i].begin(), combined_fold[i].end(), 0.0f);
-            local_score += sample_score;
-        }
-
-		for (size_t i = start i < end i++)
+		for (size_t i = start; i < end; i++)
 		{
 			std::vector<std::vector<std::vector<float>>> train_sets = dataset_splits;
 			std::swap(train_sets[i], train_sets.back());
