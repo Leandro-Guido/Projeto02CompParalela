@@ -15,7 +15,7 @@
 #include <ctime>   // Para time
 
 std::vector<std::vector<float>> load_csv_data(std::string filename);
-std::vector<float> evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden);
+float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden);
 float accuracy_metric(std::vector<int> expect, std::vector<int> predict);
 float my_evaluate_network(std::vector<std::vector<float>> dataset, float test_ratio, float l_rate, int n_epoch, int n_hidden);
 
@@ -33,7 +33,7 @@ int main(int argc, char* argv[]) {
 	MPI_Init(&argc, &argv);
 
 	int numberOfProcess;
-	MPI_Comm_Size(MPI_COMM_WORLD, &numberOfProcess);
+	MPI_Comm_size(MPI_COMM_WORLD, &numberOfProcess);
 
 	std::cout << "Neural Network with Backpropagation in C++ from scratch" << std::endl;
 	#ifdef _OPENMP
@@ -66,7 +66,7 @@ int main(int argc, char* argv[]) {
 	int n_hidden = 5;		// how many neurons you want in the first layer
 
 	// test the implemented neural network
-	std::vector<float> scores = evaluate_network(csv_data, n_folds, l_rate, n_epoch, n_hidden);
+	float scores = evaluate_network(csv_data, n_folds, l_rate, n_epoch, n_hidden);
 
 	// calculate the mean average of the scores across each cross validation
 	float mean = scores / numberOfProcess * omp_get_num_threads();
@@ -121,7 +121,7 @@ std::vector<std::vector<std::vector<float>>> deserialize_dataset(const std::vect
     return data;
 }
 
-std::vector<float> evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden) {
+float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden) {
 	int id, p;
     MPI_Comm_rank(MPI_COMM_WORLD, &id);
     MPI_Comm_size(MPI_COMM_WORLD, &p);
@@ -193,6 +193,53 @@ std::vector<float> evaluate_network(std::vector<std::vector<float>> dataset, int
             float sample_score = std::accumulate(combined_fold[i].begin(), combined_fold[i].end(), 0.0f);
             local_score += sample_score;
         }
+
+		for (size_t i = start i < end i++)
+		{
+			std::vector<std::vector<std::vector<float>>> train_sets = dataset_splits;
+			std::swap(train_sets[i], train_sets.back());
+			std::vector<std::vector<float>> test_set = train_sets.back();
+			train_sets.pop_back();
+			
+			// merge the multiple train_sets into one train set
+			std::vector<std::vector<float>> train_set;
+			for (auto &s: train_sets)
+			{
+				for (auto& row : s) {
+					train_set.push_back(row);
+				}	
+			}
+			
+			// store the expected results
+			std::vector<int> expected;
+			for (auto& row: test_set)
+			{
+				expected.push_back(static_cast<int>(row.back()));
+				// just ensure that the actual result is not saved in the test data
+				row.back() = 42;
+			}
+			
+			std::vector<int> predicted;
+			
+			std::set<float> results;
+			for (const auto& r : train_set) {
+				results.insert(r.back());
+			}
+			int n_outputs = results.size();
+			int n_inputs = train_set[0].size() - 1;
+			
+			/* Backpropagation with stochastic gradient descent */
+			Network* network = new Network();
+			network->initialize_network(n_inputs, n_hidden, n_outputs);
+			network->train(train_set, l_rate, n_epoch, n_outputs);
+			
+			for (const auto& row: test_set)
+			{
+				predicted.push_back(network->predict(row));
+			}
+			
+			local_score += accuracy_metric(expected, predicted);
+		}
     }
 
     // Reduce MPI para agregar os scores de todos os processos
