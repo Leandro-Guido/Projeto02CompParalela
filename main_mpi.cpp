@@ -36,9 +36,6 @@ int main(int argc, char* argv[]) {
 	MPI_Comm_size(MPI_COMM_WORLD, &numberOfProcess);
 
 	std::cout << "Neural Network with Backpropagation in C++ from scratch" << std::endl;
-	#ifdef _OPENMP
-		omp_set_num_threads(4);
-	#endif
 
 	std::vector<std::vector<float>> csv_data;
 	csv_data = load_csv_data("adult.csv");
