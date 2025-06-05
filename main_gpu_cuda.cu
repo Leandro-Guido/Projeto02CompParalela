@@ -144,20 +144,14 @@ float evaluate_network_cuda(float **dataset, int rows, int cols, int n_folds, fl
     float* h_train_data_flat = NULL;
     int* h_train_offsets = NULL;
     int* h_train_rows_per_fold = NULL;
-    size_t h_train_data_flat_size = 0;
-    size_t h_train_offsets_size = 0;
 
     float* h_test_data_flat = NULL;
     int* h_test_offsets = NULL;
     int* h_test_rows_per_fold = NULL;
-    size_t h_test_data_flat_size = 0;
-    size_t h_test_offsets_size = 0;
 
     float* h_expected_outputs_flat = NULL;
     int* h_expected_offsets = NULL;
     int* h_expected_sizes = NULL;
-    size_t h_expected_outputs_flat_size = 0;
-    size_t h_expected_offsets_size = 0;
 
     // Pré-alocar buffers temporários no host para os offsets e tamanhos
     // para evitar realocações complexas dentro do loop.
