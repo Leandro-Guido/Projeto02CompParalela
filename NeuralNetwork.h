@@ -18,7 +18,8 @@ public:
 	float get_output(void) { return m_output; };
 	float get_activation(void) { return m_activation; };
 	float get_delta(void) { return m_delta; };
-
+	
+	void set_output(float o) { m_output = o; }
 	void set_delta(float delta) { m_delta = delta; };
 
 private:
@@ -57,7 +58,7 @@ public:
 	std::vector<float> forward_propagate(std::vector<float> inputs);
 	void backward_propagate_error(std::vector<float> expected);
 	void update_weights(std::vector<float> inputs, float l_rate);
-	void train(std::vector<std::vector<float>>trainings_data, float l_rate, size_t n_epoch, size_t n_outputs);
+	void train(std::vector<std::vector<float>>trainings_data, float l_rate, size_t n_epoch, size_t n_outputs, int id);
 	int predict(std::vector<float> input);
 
 	void display_human();

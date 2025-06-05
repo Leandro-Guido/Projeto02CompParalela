@@ -107,10 +107,13 @@ void Network::initialize_network(int n_inputs, int n_hidden, int n_outputs) {
 
 	// add a hidden layer (n_hidden neurons are each connected to all inputs)
 	this->add_layer(n_hidden, n_inputs+1);
-
+	
 	// add an output layer (one neuron for each output is connected to all neurons from the previous layer)
 	this->add_layer(n_outputs, n_hidden+1);
 	
+	#if VERBOSE > 1
+		this->display_human();
+	#endif
 }
 
 /*
@@ -213,7 +216,7 @@ void Network::update_weights(std::vector<float> inputs, float l_rate) {
 /*  
 * Train the network with trainings data
 */
-void Network::train(std::vector<std::vector<float>>trainings_data, float l_rate, size_t n_epoch, size_t n_outputs) {
+void Network::train(std::vector<std::vector<float>>trainings_data, float l_rate, size_t n_epoch, size_t n_outputs, int id) {
 	for (size_t e = 0; e < n_epoch; e++)
 	{
 		float sum_error = 0;
@@ -229,7 +232,11 @@ void Network::train(std::vector<std::vector<float>>trainings_data, float l_rate,
 			this->backward_propagate_error(expected);
 			this->update_weights(row, l_rate);
 		}
-		std::cout << "[>] epoch=" << e << ", l_rate=" << l_rate << ", error=" << sum_error << std::endl;
+		#if VERBOSE > 0
+			int thread = omp_get_thread_num();
+			std::cout << "[" << thread << ">"<< id <<"] epoch=" << e << ", l_rate=" << l_rate << ", error=" << sum_error << std::endl;
+			std::cout.flush();
+		#endif
 	}
 }
 

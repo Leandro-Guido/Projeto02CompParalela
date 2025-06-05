@@ -34,9 +34,14 @@ sys     0m0.100s
 v) ler o lembrete
 
 vi) COMPILAÇÃO E EXECUÇÃO DOS CÓDIGOS
-OpenMP:
-    CONFIGURAR: trocar na função main (main.cpp) o número de threads omp_set_num_threads(<número de threads>);
-    COMPILAR: g++ -O3 -Wall -Wpedantic -fopenmp main.cpp NeuralNetwork.cpp -o <nome>.exe
-    EXECUTAR: time ./<nome>.exe
 
-LEMBRETE AO PROFESSOR: Na hora da apresentação nós não tínhamos feito ainda os slides e nem a parte do MPI (todo o resto foi apresentado), a tentativa do MPI está junto dos outros códigos como main_mpi.cpp (não conseguimos fazer rodar sem estourar a memória).
+OpenMP:
+
+    mudar os valores entre parentesis
+
+    COMPILAR: g++ -O3 -fopenmp -std=c++11 -DSCHEDULE="schedule(dynamic, 1)" -DVERBOSE=1 main.cpp NeuralNetwork.cpp -o (nome).exe
+    FLAG -DVERBOSE (1 = mostra execução por epocas, 2 = mostra também o resultado na network inteira)
+
+    EXECUTAR: time ./(nome).exe <num_threads> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>
+    ex.:      time ./seq.exe 1 "adult_1.csv" 4 0.3 70 5
+    no caso do parcode é indicado filtrar para usar threads diferentes da 0 e da 1: time taskset -c 2-4 ./seq.exe 2 "adult_1.csv" 8 0.01 100 5

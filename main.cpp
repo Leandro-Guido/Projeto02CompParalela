@@ -11,8 +11,12 @@
 #include "NeuralNetwork.h"
 #include <omp.h>
 
+#ifndef SCHEDULE
+	#define SCHEDULE
+#endif
+
 std::vector<std::vector<float>> load_csv_data(std::string filename);
-std::vector<float> evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden);
+float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden);
 float accuracy_metric(std::vector<int> expect, std::vector<int> predict);
 float my_evaluate_network(std::vector<std::vector<float>> dataset, float test_ratio, float l_rate, int n_epoch, int n_hidden);
 
@@ -28,55 +32,42 @@ float my_evaluate_network(std::vector<std::vector<float>> dataset, float test_ra
 */
 int main(int argc, char* argv[]) {
 	std::cout << "Neural Network with Backpropagation in C++ from scratch" << std::endl;
-	#ifdef _OPENMP
-		omp_set_num_threads(8);
-	#endif
+
+	if (argc < 7) {
+        std::cerr << "Uso: " << argv[0] << " <num_threads> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>\n";
+        return 1;
+    }
+
+	int num_threads = std::atoi(argv[1]);
+    std::string dataset_path = argv[2];
+
+    int n_folds = std::atoi(argv[3]);  // how many folds you want to create from the given dataset
+    float l_rate = std::atof(argv[4]); // how much of an impact shall an error have on a weight
+    int n_epoch = std::atoi(argv[5]);  // how many times should weights be updated
+    int n_hidden = std::atoi(argv[6]); // how many neurons you want in the first layer
+
+	omp_set_num_threads(num_threads);
 
 	std::vector<std::vector<float>> csv_data;
-	csv_data = load_csv_data("adult.csv");
-
-	/*
-	* Normalize the last column (turning the outputs into values starting from 0 for the one-hot encoding in the end)
-	*/
-	std::map<int, int> lookup = {};
-	int index = 0;
-	for (auto& vec : csv_data) {
-		std::pair<std::map<int, int>::iterator, bool> ret;
-		// insert unique values
-		ret = lookup.insert(std::pair<int, int>(static_cast<int>(vec.back()),index));
-		// update the vector with the new index
-		vec.back() = static_cast<float>(ret.first->second);
-		// if an actual new value was found, increase the index
-		if (ret.second) {
-			index++;
-		}
-	}
-
-	int n_folds = 4;		// how many folds you want to create from the given dataset
-	float l_rate = 0.3f;	// how much of an impact shall an error have on a weight
-	int n_epoch = 70;		// how many times should weights be updated
-	int n_hidden = 5;		// how many neurons you want in the first layer
+	csv_data = load_csv_data(dataset_path);
 
 	// test the implemented neural network
-	std::vector<float> scores = evaluate_network(csv_data, n_folds, l_rate, n_epoch, n_hidden);
-
-	// calculate the mean average of the scores across each cross validation
-	float mean = std::accumulate(scores.begin(), scores.end(), decltype(scores)::value_type(0)) / static_cast<float>(scores.size());
+	float mean = evaluate_network(csv_data, n_folds, l_rate, n_epoch, n_hidden);
 
 	std::cout << "Mean accuracy: " << mean << std::endl;
 
 	return 0;
 }
 
-std::vector<float> evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden) {
+float evaluate_network(std::vector<std::vector<float>> dataset, int n_folds, float l_rate, int n_epoch, int n_hidden) {
 
 	/* Split dataset into k folds */
 	std::vector<std::vector<std::vector<float>>> dataset_splits;
 	// initialize prng
 	std::srand(static_cast<unsigned int>(std::time(nullptr)));
-	
-	std::vector<float> scores;
-	
+
+	float sum_scores;
+
 	size_t fold_size = static_cast<unsigned int>(dataset.size() / n_folds);
 
 	for (int f = 0; f < n_folds; f++)
@@ -94,6 +85,35 @@ std::vector<float> evaluate_network(std::vector<std::vector<float>> dataset, int
 		dataset_splits.push_back(fold);
 	}
 
+	// Pré-processamento antes do paralelismo
+	std::vector<std::vector<std::vector<float>>> train_sets_all(dataset_splits.size());
+	std::vector<std::vector<std::vector<float>>> test_sets(dataset_splits.size());
+	std::vector<std::vector<int>> expected_all(dataset_splits.size());
+
+	for (size_t i = 0; i < dataset_splits.size(); ++i) {
+		// Clona referência e troca o i-ésimo split com o último
+		auto splits_copy = dataset_splits;
+		std::swap(splits_copy[i], splits_copy.back());
+
+		std::vector<std::vector<float>> test_set = splits_copy.back();
+		splits_copy.pop_back();
+
+		std::vector<std::vector<float>> train_set;
+		for (auto& s : splits_copy) {
+			train_set.insert(train_set.end(), s.begin(), s.end());
+		}
+
+		std::vector<int> expected;
+		for (auto& row : test_set) {
+			expected.push_back(static_cast<int>(row.back()));
+			row.back() = 42;
+		}
+
+		train_sets_all[i] = std::move(train_set);
+		test_sets[i] = std::move(test_set);
+		expected_all[i] = std::move(expected);
+	}
+
 	/* Iterate over folds */
 	// choose one as test and the rest as training sets
 	/*
@@ -103,55 +123,34 @@ std::vector<float> evaluate_network(std::vector<std::vector<float>> dataset, int
 	 * fim, este ponto do código, onde são utilizadas várias redes, se torna mais 
 	 * eficiente ao paralelizar, pois cada rede será executada em paralelo. 
 	*/
-	#pragma omp parallel for
-	for (size_t i = 0; i < dataset_splits.size(); i++)
+	#pragma omp parallel for schedule(dynamic, 1) reduction(+:sum_scores)
+	for (size_t i = 0; i < dataset_splits.size(); ++i)
 	{
-		std::vector<std::vector<std::vector<float>>> train_sets = dataset_splits;
-		std::swap(train_sets[i], train_sets.back());
-		std::vector<std::vector<float>> test_set = train_sets.back();
-		train_sets.pop_back();
-		
-		// merge the multiple train_sets into one train set
-		std::vector<std::vector<float>> train_set;
-		for (auto &s: train_sets)
-		{
-			for (auto& row : s) {
-				train_set.push_back(row);
-			}	
-		}
-		
-		// store the expected results
-		std::vector<int> expected;
-		for (auto& row: test_set)
-		{
-			expected.push_back(static_cast<int>(row.back()));
-			// just ensure that the actual result is not saved in the test data
-			row.back() = 42;
-		}
-		
-		std::vector<int> predicted;
-		
+		const auto& train_set = train_sets_all[i];
+		auto test_set = test_sets[i];
+		const auto& expected = expected_all[i];
+
 		std::set<float> results;
 		for (const auto& r : train_set) {
 			results.insert(r.back());
 		}
+
 		int n_outputs = results.size();
 		int n_inputs = train_set[0].size() - 1;
-		
-		/* Backpropagation with stochastic gradient descent */
-		Network* network = new Network();
+
+		std::unique_ptr<Network> network(new Network());
 		network->initialize_network(n_inputs, n_hidden, n_outputs);
-		network->train(train_set, l_rate, n_epoch, n_outputs);
-		
-		for (const auto& row: test_set)
-		{
-			predicted.push_back(network->predict(row));
+		network->train(train_set, l_rate, n_epoch, n_outputs, i);
+
+		std::vector<int> predicted(test_set.size());
+		for (size_t j = 0; j < test_set.size(); ++j) {
+			predicted[j] = network->predict(test_set[j]);
 		}
-		
-		scores.push_back(accuracy_metric(expected, predicted));
+
+		sum_scores += accuracy_metric(expected, predicted);
 	}
 
-	return scores;
+	return sum_scores / n_folds;
 }
 
 /*
@@ -202,7 +201,7 @@ float my_evaluate_network(std::vector<std::vector<float>> dataset, float test_ra
 	/* Backpropagation with stochastic gradient descent */
 	Network* network = new Network();
 	network->initialize_network(n_inputs, n_hidden, n_outputs);
-	network->train(train_set, l_rate, n_epoch, n_outputs);
+	network->train(train_set, l_rate, n_epoch, n_outputs, 0);
 
 	for (const auto& row: test_set)
 	{
