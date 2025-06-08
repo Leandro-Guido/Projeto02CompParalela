@@ -3,8 +3,9 @@
 #include <string.h>
 #include <math.h>
 #include <fenv.h>
-#include <time.h>
+#include <time.h> // Continua sendo usada no host
 #include <cuda_runtime.h> // Para funções CUDA
+#include <curand_kernel.h> // Para geração de números aleatórios na GPU
 
 #define MAX_ROWS 40000
 #define MAX_COLS 100
@@ -14,8 +15,17 @@
 #define VERBOSE 0
 #endif
 
-// Qualificador para funções que podem ser chamadas tanto do host quanto do device
-#define CUDA_CALLABLE_MEMBER __host__ __device__
+// Removido o CUDA_CALLABLE_MEMBER para essas funções, pois elas devem ser apenas __device__
+// #define CUDA_CALLABLE_MEMBER __host__ __device__
+
+// Adicionei um macro para verificar erros CUDA
+#define cudaCheckError() { \
+    cudaError_t err = cudaGetLastError(); \
+    if (err != cudaSuccess) { \
+        fprintf(stderr, "CUDA error: %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+        exit(1); \
+    } \
+}
 
 typedef struct
 {
@@ -42,22 +52,19 @@ void print_data(float **data, int rows, int cols);
 void normalize_data(float **data, int rows, int cols);
 float accuracy_metric_host(int *expected, int *predicted, int size); // Renomeada para evitar conflito
 
-// OPERAÇÕES NETWORK (agora com qualificadores CUDA)
-CUDA_CALLABLE_MEMBER void initialize_network_device(Network *net, int n_inputs, int n_hidden, int n_outputs);
-CUDA_CALLABLE_MEMBER void free_network_device(Network *net); // Para liberar memória na GPU
+// OPERAÇÕES NETWORK (agora com qualificadores CUDA ajustados)
+// A função initialize_network_device precisa receber o estado do gerador
+__device__ void initialize_network_device(Network *net, int n_inputs, int n_hidden, int n_outputs, curandState *rand_state);
+__device__ void free_network_device(Network *net); // Para liberar memória na GPU
 
-CUDA_CALLABLE_MEMBER void forward_propagate_device(Network *net, float *inputs);
-CUDA_CALLABLE_MEMBER void backward_propagate_error_device(Network *net, float *expected);
-CUDA_CALLABLE_MEMBER void update_weights_device(Network *net, float *inputs, float l_rate);
-CUDA_CALLABLE_MEMBER int predict_device(Network *net, float *input);
+__device__ void forward_propagate_device(Network *net, float *inputs);
+__device__ void backward_propagate_error_device(Network *net, float *expected);
+__device__ void update_weights_device(Network *net, float *inputs, float l_rate);
+__device__ int predict_device(Network *net, float *input);
 
-// Função rand_weight() precisa ser adaptada para GPU
-__device__ float rand_weight_device() {
-    // Em um kernel real, você usaria uma biblioteca como cuRAND para gerar números aleatórios.
-    // Para simplificar, esta é uma implementação básica (e não verdadeiramente aleatória)
-    // para demonstrar que o rand() do host não funciona no device.
-    // Lembre-se: rand() não é thread-safe nem aleatório o suficiente para GPUs.
-    return (float)rand() / (float)RAND_MAX;
+// Função rand_weight() adaptada para usar cuRAND
+__device__ float rand_weight_device(curandState *rand_state) {
+    return curand_uniform(rand_state); // Gera um float entre 0.0f e 1.0f
 }
 
 // Função do host para lidar com a interação CPU-GPU
@@ -79,7 +86,8 @@ __global__ void train_and_predict_kernel(
     int n_epoch,
     int n_outputs,
     int n_inputs_per_row, // Número total de entradas por linha (incluindo o target)
-    float* d_accuracy_scores // Array para armazenar as pontuações de acurácia de cada fold
+    float* d_accuracy_scores, // Array para armazenar as pontuações de acurácia de cada fold
+    curandState *rand_states // Estado do gerador para cada thread
 );
 
 // Kernel para inicializar as redes na GPU
@@ -88,7 +96,9 @@ __global__ void initialize_networks_kernel(
     int n_folds,
     int n_inputs,
     int n_hidden,
-    int n_outputs
+    int n_outputs,
+    curandState *rand_states, // Estado do gerador para cada thread
+    unsigned long long seed_offset // Novo argumento para o seed
 );
 
 // Kernel para liberar a memória interna de cada Network na GPU
@@ -109,7 +119,7 @@ int main(int argc, char **argv)
     int n_epoch = atoi(argv[5]);
     int n_hidden = atoi(argv[6]);
 
-    srand(time(NULL)); // Inicialização do PRNG para CPU
+    srand(time(NULL)); // Inicialização do PRNG para CPU (ainda útil para load_csv_data, se aplicável)
 
     int rows, cols;
     float **dataset = load_csv_data(dataset_file, &rows, &cols);
@@ -153,18 +163,16 @@ float evaluate_network_cuda(float **dataset, int rows, int cols, int n_folds, fl
     int* h_expected_offsets = NULL;
     int* h_expected_sizes = NULL;
 
-    // Pré-alocar buffers temporários no host para os offsets e tamanhos
-    // para evitar realocações complexas dentro do loop.
-    // O tamanho máximo necessário para cada um é n_folds.
+    // Pré-alocar buffers temporários no host para os offsets e tamanhos.
     h_train_offsets = (int*)malloc(n_folds * sizeof(int));
     h_train_rows_per_fold = (int*)malloc(n_folds * sizeof(int));
     h_test_offsets = (int*)malloc(n_folds * sizeof(int));
     h_test_rows_per_fold = (int*)malloc(n_folds * sizeof(int));
     h_expected_offsets = (int*)malloc(n_folds * sizeof(int));
     h_expected_sizes = (int*)malloc(n_folds * sizeof(int));
+    cudaCheckError();
 
     // Calcular o tamanho total necessário para os dados flat antes da alocação.
-    // Isso é mais eficiente do que reallocar repetidamente.
     size_t total_train_data_elements = 0;
     size_t total_test_data_elements = 0;
     size_t total_expected_elements = 0;
@@ -178,6 +186,7 @@ float evaluate_network_cuda(float **dataset, int rows, int cols, int n_folds, fl
     h_train_data_flat = (float*)malloc(total_train_data_elements * sizeof(float));
     h_test_data_flat = (float*)malloc(total_test_data_elements * sizeof(float));
     h_expected_outputs_flat = (float*)malloc(total_expected_elements * sizeof(float));
+    cudaCheckError();
 
     // Popular os buffers flat e os arrays de offsets/tamanhos
     size_t current_train_flat_idx = 0;
@@ -191,6 +200,7 @@ float evaluate_network_cuda(float **dataset, int rows, int cols, int n_folds, fl
         float **train_set_cpu = (float**)malloc((rows - fold_size) * sizeof(float *));
         float **test_set_cpu = (float**)malloc(fold_size * sizeof(float *));
         int *expected_cpu = (int*)malloc(fold_size * sizeof(int));
+        cudaCheckError();
         int train_idx = 0, test_idx = 0;
 
         for (int r = 0; r < rows; r++) {
@@ -247,46 +257,51 @@ float evaluate_network_cuda(float **dataset, int rows, int cols, int n_folds, fl
     int* d_expected_sizes;
 
     float* d_accuracy_scores;
+    curandState *d_rand_states; // Estados dos geradores de números aleatórios na GPU
 
-    cudaMalloc((void**)&d_networks, n_folds * sizeof(Network));
-    cudaMalloc((void**)&d_train_data_flat, total_train_data_elements * sizeof(float));
-    cudaMalloc((void**)&d_train_offsets, n_folds * sizeof(int));
-    cudaMalloc((void**)&d_train_rows_d, n_folds * sizeof(int));
+    cudaMalloc((void**)&d_networks, n_folds * sizeof(Network)); cudaCheckError();
+    cudaMalloc((void**)&d_train_data_flat, total_train_data_elements * sizeof(float)); cudaCheckError();
+    cudaMalloc((void**)&d_train_offsets, n_folds * sizeof(int)); cudaCheckError();
+    cudaMalloc((void**)&d_train_rows_d, n_folds * sizeof(int)); cudaCheckError();
 
-    cudaMalloc((void**)&d_test_data_flat, total_test_data_elements * sizeof(float));
-    cudaMalloc((void**)&d_test_offsets, n_folds * sizeof(int));
-    cudaMalloc((void**)&d_test_rows_d, n_folds * sizeof(int));
+    cudaMalloc((void**)&d_test_data_flat, total_test_data_elements * sizeof(float)); cudaCheckError();
+    cudaMalloc((void**)&d_test_offsets, n_folds * sizeof(int)); cudaCheckError();
+    cudaMalloc((void**)&d_test_rows_d, n_folds * sizeof(int)); cudaCheckError();
 
-    cudaMalloc((void**)&d_expected_outputs_flat, total_expected_elements * sizeof(float));
-    cudaMalloc((void**)&d_expected_offsets, n_folds * sizeof(int));
-    cudaMalloc((void**)&d_expected_sizes, n_folds * sizeof(int));
+    cudaMalloc((void**)&d_expected_outputs_flat, total_expected_elements * sizeof(float)); cudaCheckError();
+    cudaMalloc((void**)&d_expected_offsets, n_folds * sizeof(int)); cudaCheckError();
+    cudaMalloc((void**)&d_expected_sizes, n_folds * sizeof(int)); cudaCheckError();
 
-    cudaMalloc((void**)&d_accuracy_scores, n_folds * sizeof(float));
+    cudaMalloc((void**)&d_accuracy_scores, n_folds * sizeof(float)); cudaCheckError();
+    cudaMalloc((void**)&d_rand_states, n_folds * sizeof(curandState)); cudaCheckError();
 
 
     // Copiar dados do host para o device
-    cudaMemcpy(d_train_data_flat, h_train_data_flat, total_train_data_elements * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_train_offsets, h_train_offsets, n_folds * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_train_rows_d, h_train_rows_per_fold, n_folds * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_train_data_flat, h_train_data_flat, total_train_data_elements * sizeof(float), cudaMemcpyHostToDevice); cudaCheckError();
+    cudaMemcpy(d_train_offsets, h_train_offsets, n_folds * sizeof(int), cudaMemcpyHostToDevice); cudaCheckError();
+    cudaMemcpy(d_train_rows_d, h_train_rows_per_fold, n_folds * sizeof(int), cudaMemcpyHostToDevice); cudaCheckError();
 
-    cudaMemcpy(d_test_data_flat, h_test_data_flat, total_test_data_elements * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_test_offsets, h_test_offsets, n_folds * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_test_rows_d, h_test_rows_per_fold, n_folds * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_test_data_flat, h_test_data_flat, total_test_data_elements * sizeof(float), cudaMemcpyHostToDevice); cudaCheckError();
+    cudaMemcpy(d_test_offsets, h_test_offsets, n_folds * sizeof(int), cudaMemcpyHostToDevice); cudaCheckError();
+    cudaMemcpy(d_test_rows_d, h_test_rows_per_fold, n_folds * sizeof(int), cudaMemcpyHostToDevice); cudaCheckError();
 
-    cudaMemcpy(d_expected_outputs_flat, h_expected_outputs_flat, total_expected_elements * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_expected_offsets, h_expected_offsets, n_folds * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_expected_sizes, h_expected_sizes, n_folds * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_expected_outputs_flat, h_expected_outputs_flat, total_expected_elements * sizeof(float), cudaMemcpyHostToDevice); cudaCheckError();
+    cudaMemcpy(d_expected_offsets, h_expected_offsets, n_folds * sizeof(int), cudaMemcpyHostToDevice); cudaCheckError();
+    cudaMemcpy(d_expected_sizes, h_expected_sizes, n_folds * sizeof(int), cudaMemcpyHostToDevice); cudaCheckError();
 
 
     // Configuração do lançamento do kernel
     int blocks_per_grid = 1;
     int threads_per_block = n_folds;
 
+    // Gerar um seed base no host para os geradores na GPU
+    unsigned long long host_seed = time(NULL);
+
     // Inicializar as redes na GPU
     initialize_networks_kernel<<<blocks_per_grid, threads_per_block>>>(
-        d_networks, n_folds, cols - 1, n_hidden, n_outputs
+        d_networks, n_folds, cols - 1, n_hidden, n_outputs, d_rand_states, host_seed
     );
-    cudaDeviceSynchronize();
+    cudaDeviceSynchronize(); cudaCheckError(); // Espera a inicialização terminar
 
     // Lançar o kernel principal de treinamento e previsão
     train_and_predict_kernel<<<blocks_per_grid, threads_per_block>>>(
@@ -295,13 +310,14 @@ float evaluate_network_cuda(float **dataset, int rows, int cols, int n_folds, fl
         d_test_data_flat, d_test_offsets, d_test_rows_d,
         d_expected_outputs_flat, d_expected_offsets, d_expected_sizes,
         l_rate, n_epoch, n_outputs, cols,
-        d_accuracy_scores
+        d_accuracy_scores,
+        d_rand_states // Passa o array de estados para o kernel principal
     );
-    cudaDeviceSynchronize();
+    cudaDeviceSynchronize(); cudaCheckError(); // Espera o kernel terminar
 
     // Copiar os resultados de acurácia de volta para o host
-    float* h_accuracy_scores_result = (float*)malloc(n_folds * sizeof(float));
-    cudaMemcpy(h_accuracy_scores_result, d_accuracy_scores, n_folds * sizeof(float), cudaMemcpyDeviceToHost);
+    float* h_accuracy_scores_result = (float*)malloc(n_folds * sizeof(float)); cudaCheckError();
+    cudaMemcpy(h_accuracy_scores_result, d_accuracy_scores, n_folds * sizeof(float), cudaMemcpyDeviceToHost); cudaCheckError();
 
     // Calcular a acurácia média
     for (int i = 0; i < n_folds; ++i) {
@@ -310,19 +326,20 @@ float evaluate_network_cuda(float **dataset, int rows, int cols, int n_folds, fl
 
     // Liberar memória da GPU (Primeiro liberar a memória interna de cada Network)
     free_networks_kernel<<<blocks_per_grid, threads_per_block>>>(d_networks, n_folds);
-    cudaDeviceSynchronize();
+    cudaDeviceSynchronize(); cudaCheckError(); // Espera a liberação interna terminar
 
-    cudaFree(d_networks);
-    cudaFree(d_train_data_flat);
-    cudaFree(d_train_offsets);
-    cudaFree(d_train_rows_d);
-    cudaFree(d_test_data_flat);
-    cudaFree(d_test_offsets);
-    cudaFree(d_test_rows_d);
-    cudaFree(d_expected_outputs_flat);
-    cudaFree(d_expected_offsets);
-    cudaFree(d_expected_sizes);
-    cudaFree(d_accuracy_scores);
+    cudaFree(d_networks); cudaCheckError();
+    cudaFree(d_train_data_flat); cudaCheckError();
+    cudaFree(d_train_offsets); cudaCheckError();
+    cudaFree(d_train_rows_d); cudaCheckError();
+    cudaFree(d_test_data_flat); cudaCheckError();
+    cudaFree(d_test_offsets); cudaCheckError();
+    cudaFree(d_test_rows_d); cudaCheckError();
+    cudaFree(d_expected_outputs_flat); cudaCheckError();
+    cudaFree(d_expected_offsets); cudaCheckError();
+    cudaFree(d_expected_sizes); cudaCheckError();
+    cudaFree(d_accuracy_scores); cudaCheckError();
+    cudaFree(d_rand_states); cudaCheckError();
 
     // Liberar a memória do host
     free(h_train_data_flat);
@@ -336,6 +353,8 @@ float evaluate_network_cuda(float **dataset, int rows, int cols, int n_folds, fl
     free(h_expected_sizes);
     free(h_accuracy_scores_result);
 
+    free_network_devide(d_networks);
+
     return sum_accuracy / (float)n_folds;
 }
 
@@ -345,11 +364,17 @@ __global__ void initialize_networks_kernel(
     int n_folds,
     int n_inputs,
     int n_hidden,
-    int n_outputs
+    int n_outputs,
+    curandState *rand_states,
+    unsigned long long seed_offset // Recebe o seed base do host
 ) {
     int fold_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (fold_idx < n_folds) {
-        initialize_network_device(&d_networks[fold_idx], n_inputs, n_hidden, n_outputs);
+        // Inicializa o estado do gerador de números aleatórios para esta thread
+        // O seed é baseado no seed_offset do host e no ID da thread
+        curand_init(seed_offset + fold_idx, 0, 0, &rand_states[fold_idx]);
+
+        initialize_network_device(&d_networks[fold_idx], n_inputs, n_hidden, n_outputs, &rand_states[fold_idx]);
     }
 }
 
@@ -369,12 +394,14 @@ __global__ void train_and_predict_kernel(
     int n_epoch,
     int n_outputs,
     int n_inputs_per_row,
-    float* d_accuracy_scores
+    float* d_accuracy_scores,
+    curandState *rand_states // Recebe o array de estados
 ) {
     int fold_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (fold_idx < gridDim.x * blockDim.x) {
 
         Network* current_net = &d_networks[fold_idx];
+        // curandState *current_rand_state = &rand_states[fold_idx]; // Não é mais usado diretamente aqui, mas em funções chamadas
 
         // Obter os dados de treino para este fold
         float* train_data_for_fold = d_train_data_flat + d_train_offsets[fold_idx];
@@ -417,7 +444,6 @@ __global__ void train_and_predict_kernel(
         }
 
         // Lógica de previsão
-        // int predicted[current_test_rows]; // Não é ideal para alocação variável em kernel
         int correct_predictions = 0;
         for (int j = 0; j < current_test_rows; j++) {
             float* test_row = test_data_for_fold + j * n_inputs_per_row;
@@ -443,7 +469,7 @@ __global__ void free_networks_kernel(Network* d_networks, int n_folds) {
 // Funções Network (Adaptadas para CUDA)
 // --------------------------------------------
 
-CUDA_CALLABLE_MEMBER void initialize_network_device(Network *net, int n_inputs, int n_hidden, int n_outputs)
+__device__ void initialize_network_device(Network *net, int n_inputs, int n_hidden, int n_outputs, curandState *rand_state)
 {
     // REDE NEURAL COM 2 CAMADAS
     net->n_layers = 2;
@@ -455,12 +481,14 @@ CUDA_CALLABLE_MEMBER void initialize_network_device(Network *net, int n_inputs, 
     cudaMalloc((void**)&net->layers[0].neurons, n_hidden * sizeof(Neuron));
     for (int i = 0; i < n_hidden; i++)
     {
+        // Precisamos garantir que a alocação de neurônios seja acessível por ponteiro de device
+        // Se initialize_network_device é chamada no device, essas alocações são no device.
         Neuron* current_neuron = &net->layers[0].neurons[i]; // Ponteiro para o neurônio no device
         current_neuron->n_weights = n_inputs + 1;
         cudaMalloc((void**)&current_neuron->weights, (n_inputs + 1) * sizeof(float));
         for (int j = 0; j < n_inputs + 1; j++)
         {
-            current_neuron->weights[j] = rand_weight_device(); // Usar rand_weight_device
+            current_neuron->weights[j] = rand_weight_device(rand_state); // Passa o estado do gerador
         }
     }
 
@@ -474,17 +502,17 @@ CUDA_CALLABLE_MEMBER void initialize_network_device(Network *net, int n_inputs, 
         cudaMalloc((void**)&current_neuron->weights, (n_hidden + 1) * sizeof(float));
         for (int j = 0; j < n_hidden + 1; j++)
         {
-            current_neuron->weights[j] = rand_weight_device();
+            current_neuron->weights[j] = rand_weight_device(rand_state); // Passa o estado do gerador
         }
     }
 }
 
-CUDA_CALLABLE_MEMBER void forward_propagate_device(Network *net, float *inputs)
+__device__ void forward_propagate_device(Network *net, float *inputs)
 {
-    // Usar um buffer de tamanho fixo na stack ou memória compartilhada se possível.
-    // malloc/free no device são para casos mais complexos e podem introduzir overhead.
-    // MAX_NEURONS deve ser definido com base no número máximo de neurônios que uma camada pode ter.
-    float new_inputs_buffer[MAX_NEURONS]; // Alocação na stack do device (limite de 256KB por thread por padrão)
+    // É seguro usar um array estático de tamanho fixo em funções __device__
+    // desde que o tamanho seja conhecido em tempo de compilação e pequeno o suficiente
+    // para a stack da thread (MAX_NEURONS).
+    float new_inputs_buffer[MAX_NEURONS];
 
     float *in = inputs;
 
@@ -512,7 +540,7 @@ CUDA_CALLABLE_MEMBER void forward_propagate_device(Network *net, float *inputs)
     }
 }
 
-CUDA_CALLABLE_MEMBER void backward_propagate_error_device(Network *net, float *expected)
+__device__ void backward_propagate_error_device(Network *net, float *expected)
 {
     for (int l = net->n_layers - 1; l >= 0; l--)
     {
@@ -539,9 +567,9 @@ CUDA_CALLABLE_MEMBER void backward_propagate_error_device(Network *net, float *e
     }
 }
 
-CUDA_CALLABLE_MEMBER void update_weights_device(Network *net, float *inputs, float l_rate)
+__device__ void update_weights_device(Network *net, float *inputs, float l_rate)
 {
-    float new_in_buffer[MAX_NEURONS]; // Alocação na stack do device
+    float new_in_buffer[MAX_NEURONS];
 
     float *in = inputs;
 
@@ -552,7 +580,6 @@ CUDA_CALLABLE_MEMBER void update_weights_device(Network *net, float *inputs, flo
         // Copiar as entradas corretas para o buffer `new_in_buffer` para esta camada
         if (l == 0) { // Primeira camada usa as entradas originais
             // Aqui, in já aponta para as entradas originais (row)
-            // Não precisamos copiar para new_in_buffer para usar as entradas da primeira camada
         } else { // Camadas subsequentes usam as saídas da camada anterior
             Layer *prev_layer = &net->layers[l-1];
             for (int i = 0; i < prev_layer->n_neurons; i++)
@@ -565,7 +592,6 @@ CUDA_CALLABLE_MEMBER void update_weights_device(Network *net, float *inputs, flo
         for (int n = 0; n < layer->n_neurons; n++)
         {
             Neuron *neuron = &layer->neurons[n];
-            // O número de pesos para as entradas (excluindo o bias) é neuron->n_weights - 1
             int num_input_weights = neuron->n_weights - 1;
 
             for (int j = 0; j < num_input_weights; j++)
@@ -577,7 +603,7 @@ CUDA_CALLABLE_MEMBER void update_weights_device(Network *net, float *inputs, flo
     }
 }
 
-CUDA_CALLABLE_MEMBER int predict_device(Network *net, float *input)
+__device__ int predict_device(Network *net, float *input)
 {
     forward_propagate_device(net, input);
     Layer *output_layer = &net->layers[net->n_layers - 1];
@@ -595,7 +621,7 @@ CUDA_CALLABLE_MEMBER int predict_device(Network *net, float *input)
     return max_i;
 }
 
-CUDA_CALLABLE_MEMBER void free_network_device(Network *net)
+void free_network_device(Network *net)
 {
     if (net->layers) {
         for (int l = 0; l < net->n_layers; l++)
@@ -675,6 +701,9 @@ void normalize_data(float **data, int rows, int cols)
         {
             data[i][j] = (data[i][j] - mins[j]) / (maxs[j] - mins[j]);
         }
+        // No caso de maxs[j] == mins[j], para evitar divisão por zero,
+        // o valor já deve ser 0 (data[i][j] - mins[j] será 0).
+        // Não é estritamente necessário um if, mas pode ser boa prática.
     }
     free(mins);
     free(maxs);
