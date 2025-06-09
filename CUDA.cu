@@ -30,11 +30,26 @@ typedef struct {
     int n_layers;
 } Network;
 
+typedef struct {
+    float **dataset;
+    int rows;
+    int cols;
+    int n_folds;
+    float l_rate;
+    int n_epoch;
+    int n_hidden;
+    float *accuracies;
+    float **train_set;
+    float **test_set;
+    int *expected;
+    int *predicted;
+} EvalParams;
+
 __device__ float rand_weight(curandState *state) {
     return curand_uniform(state);
 }
 
-__global__ void evaluate_kernel(float **dataset, int rows, int cols, int n_folds, float l_rate, int n_epoch, int n_hidden, float *accuracies);
+__global__ void evaluate_kernel(EvalParams *evalParams);
 __device__ void initialize_network(Network *net, int n_inputs, int n_hidden, int n_outputs);
 __device__ void train(Network *net, float **train_data, int train_rows, float l_rate, int n_epoch, int n_outputs, int id);
 __device__ int predict(Network *net, float *input);
@@ -50,24 +65,23 @@ void normalize_data(float **data, int rows, int cols);
 
 int main(int argc, char **argv)
 {
-    if (argc < 7) {
-        printf("Uso: %s <num_threads> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>\n", argv[0]);
+    if (argc < 6) {
+        printf("Uso: %s <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>\n", argv[0]);
         return 1;
     }
 
-    int num_threads = atoi(argv[1]);
-    char *dataset_file = argv[2];
-    int n_folds = atoi(argv[3]);
-    float l_rate = atof(argv[4]);
-    int n_epoch = atoi(argv[5]);
-    int n_hidden = atoi(argv[6]);
+    char *dataset_file = argv[1];
+    int n_folds = atoi(argv[2]);
+    float l_rate = atof(argv[3]);
+    int n_epoch = atoi(argv[4]);
+    int n_hidden = atoi(argv[5]);
 
     srand(time(NULL));
 
     int rows, cols;
     float **dataset = load_csv_data(dataset_file, &rows, &cols);
     normalize_data(dataset, rows, cols);
-
+    
     float mean_accuracy = evaluate_network(dataset, rows, cols, n_folds, l_rate, n_epoch, n_hidden);
     printf("Acurácia média: %.3f\n", mean_accuracy);
     return 0;
@@ -82,67 +96,141 @@ float evaluate_network(float **dataset, int rows, int cols, int n_folds, float l
     int threads = 256;
     int blocks = (n_folds + threads - 1) / threads;
 
-    evaluate_kernel<<<blocks, threads>>>(dataset, rows, cols, n_folds, l_rate, n_epoch, n_hidden, d_accuracies);
+    int fold_size = rows / n_folds;
+
+    // === 1. Alocar dataset na GPU ===
+    float **d_dataset;
+    cudaMalloc(&d_dataset, rows * sizeof(float *));  // alocar vetor de ponteiros
+
+    for (int i = 0; i < rows; i++) {
+        float *d_row;
+        cudaMalloc(&d_row, cols * sizeof(float));                 // aloca linha
+        cudaMemcpy(d_row, dataset[i], cols * sizeof(float), cudaMemcpyHostToDevice); // copia linha
+        cudaMemcpy(&d_dataset[i], &d_row, sizeof(float *), cudaMemcpyHostToDevice);  // copia ponteiro da linha para vetor
+    }
+
+    // === 2. Alocar train_set ===
+    float **d_train_set;
+    cudaMalloc(&d_train_set, (rows - fold_size) * sizeof(float *));
+
+    // === 3. Alocar test_set ===
+    float **d_test_set;
+    cudaMalloc(&d_test_set, fold_size * sizeof(float *));
+
+    // === 4. Alocar expected ===
+    int *d_expected;
+    cudaMalloc(&d_expected, fold_size * sizeof(int));
+
+    // === 5. Alocar predicted ===
+    int *d_predicted;
+    cudaMalloc(&d_predicted, fold_size * sizeof(int));
+
+    // === Preencher struct de parâmetros ===
+    EvalParams cpu_params;
+    cpu_params.dataset = d_dataset;
+    cpu_params.rows = rows;
+    cpu_params.cols = cols;
+    cpu_params.n_folds = n_folds;
+    cpu_params.l_rate = l_rate;
+    cpu_params.n_epoch = n_epoch;
+    cpu_params.n_hidden = n_hidden;
+    cpu_params.accuracies = d_accuracies;
+    cpu_params.train_set = d_train_set;
+    cpu_params.test_set = d_test_set;
+    cpu_params.expected = d_expected;
+    cpu_params.predicted = d_predicted;
+
+    EvalParams *gpu_params;
+    cudaMalloc(&gpu_params, sizeof(EvalParams));
+    cudaMemcpy(gpu_params, &cpu_params, sizeof(EvalParams), cudaMemcpyHostToDevice);
+
+    evaluate_kernel<<<blocks, threads>>>(gpu_params);
     cudaDeviceSynchronize();
 
     cudaMemcpy(h_accuracies, d_accuracies, n_folds * sizeof(float), cudaMemcpyDeviceToHost);
 
-    for (int i = 0; i < n_folds; i++)
+    for (int i = 0; i < n_folds; i++){
         sum_accuracy += h_accuracies[i];
+    }
+
+    // 1. Alocar vetor auxiliar no host para armazenar os ponteiros
+    float **h_dataset_ptrs = (float **)malloc(rows * sizeof(float *));
+    if (h_dataset_ptrs == NULL) {
+        fprintf(stderr, "Erro ao alocar memória no host para desalocar dataset\n");
+        return 0.0;
+    }
+
+    // 2. Copiar os ponteiros das linhas da GPU para o host
+    cudaMemcpy(h_dataset_ptrs, d_dataset, rows * sizeof(float *), cudaMemcpyDeviceToHost);
+
+    // 3. Liberar cada linha individualmente
+    for (int i = 0; i < rows; i++) {
+        if (h_dataset_ptrs[i] != NULL) {
+            cudaFree(h_dataset_ptrs[i]);
+        }
+    }
+
+    // 4. Liberar o vetor de ponteiros na GPU
+    cudaFree(d_dataset);
+
+    // 5. Liberar vetor auxiliar no host
+    free(h_dataset_ptrs);
 
     cudaFree(d_accuracies);
+    cudaFree(d_train_set);
+    cudaFree(d_test_set);
+    cudaFree(d_expected);
+    cudaFree(d_predicted);
     free(h_accuracies);
 
     return sum_accuracy / (float)n_folds;
 }
 // --------------------------------------------
 
-__global__ void evaluate_kernel(
-    float **dataset, int rows, int cols, int n_folds, float l_rate,
-    int n_epoch, int n_hidden, float *accuracies)
+__global__ void evaluate_kernel(EvalParams *evalParams)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n_folds) return;
-
-    int fold_size = rows / n_folds;
+    if (i >= evalParams->n_folds){
+        evalParams->accuracies[i] = 0.0;
+        return;
+    }
+    
+    int fold_size = evalParams->rows / evalParams->n_folds;
     int start = i * fold_size;
     int end = start + fold_size;
     const int n_outputs = 2;
 
-    float **train_set = (float **)malloc((rows - fold_size) * sizeof(float *));
-    float **test_set = (float **)malloc(fold_size * sizeof(float *));
-    int *expected = (int *)malloc(fold_size * sizeof(int));
     int train_idx = 0, test_idx = 0;
-
-    for (int r = 0; r < rows; r++) {
+    
+    for (int r = 0; r < evalParams->rows; r++) {
         if (r >= start && r < end) {
-            test_set[test_idx] = (float *)malloc(cols * sizeof(float));
-            memcpy(test_set[test_idx], dataset[r], cols * sizeof(float));
-            expected[test_idx] = (int)test_set[test_idx][cols - 1];
-            test_set[test_idx][cols - 1] = -1;
-            test_idx++;
+            int tidx = test_idx++;
+            for (int c = 0; c < evalParams->cols; c++) {
+                evalParams->test_set[tidx][c] = evalParams->dataset[r][c];
+            }
+            evalParams->expected[tidx] = (int)evalParams->test_set[tidx][evalParams->cols - 1];
+            evalParams->test_set[tidx][evalParams->cols - 1] = -1.0f;
         } else {
-            train_set[train_idx++] = dataset[r];
+            evalParams->train_set[train_idx++] = evalParams->dataset[r];
         }
     }
-
+    
     Network net;
-    initialize_network(&net, cols - 1, n_hidden, n_outputs);
-    train(&net, train_set, rows - fold_size, l_rate, n_epoch, n_outputs, i);
+    initialize_network(&net, evalParams->cols - 1, evalParams->n_hidden, n_outputs);
+    train(&net, evalParams->train_set, evalParams->rows - fold_size, evalParams->l_rate, evalParams->n_epoch, n_outputs, i);
 
-    int *predicted = (int *)malloc(fold_size * sizeof(int));
     for (int j = 0; j < fold_size; j++) {
-        predicted[j] = predict(&net, test_set[j]);
+        evalParams->predicted[j] = predict(&net, evalParams->test_set[j]);
     }
 
-    float acc = accuracy_metric(expected, predicted, fold_size);
-    accuracies[i] = acc;
-
-    for (int j = 0; j < fold_size; j++) free(test_set[j]);
-    free(test_set);
-    free(train_set);
-    free(predicted);
-    free(expected);
+    float acc = accuracy_metric(evalParams->expected, evalParams->predicted, fold_size);
+    evalParams->accuracies[i] = acc;
+    
+    // for (int j = 0; j < fold_size; j++) free(test_set[j]);
+    // free(test_set);
+    // free(train_set);
+    // free(predicted);
+    // free(expected);
     free_network(&net);
 }
 // carrega os dados do CSV como uma matriz de floats
