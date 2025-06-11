@@ -45,17 +45,25 @@ typedef struct {
     int *predicted;
 } EvalParams;
 
+typedef struct {
+    Layer *layers;
+    Neuron *hidden_neurons;
+    Neuron *output_neurons;
+    float **hidden_weights;
+    float **output_weights;
+} InitializeParams;
+
 __device__ float rand_weight(curandState *state) {
     return curand_uniform(state);
 }
 
-__global__ void evaluate_kernel(EvalParams *evalParams);
-__device__ void initialize_network(Network *net, int n_inputs, int n_hidden, int n_outputs);
-__device__ void train(Network *net, float **train_data, int train_rows, float l_rate, int n_epoch, int n_outputs, int id);
-__device__ int predict(Network *net, float *input);
+__global__ void evaluate_kernel(EvalParams *evalParams, InitializeParams *initialize_params, float *expected, float **arrayNewInputs, float **arrayNewIn);
+__device__ void initialize_network(Network *net, int n_inputs, int n_hidden, int n_outputs, InitializeParams *params);
+__device__ void train(Network *net, float **train_data, int train_rows, float l_rate, int n_epoch, int n_outputs, int id, float *expected, float **arrayNewInputs, float **arrayNewIn);
+__device__ int predict(Network *net, float *input, float **arrayNewInputs);
 __device__ void free_network(Network *net);
 __device__ float accuracy_metric(int *expected, int *predicted, int size);
-__device__ void forward_propagate(Network *net, float *inputs);
+__device__ void forward_propagate(Network *net, float *inputs, float **arrayNewInputs);
 __device__ void backward_propagate_error(Network *net, float *expected);
 __device__ void update_weights(Network *net, float *inputs, float l_rate);
 float evaluate_network(float **dataset, int rows, int cols, int n_folds, float l_rate, int n_epoch, int n_hidden);
@@ -113,9 +121,21 @@ float evaluate_network(float **dataset, int rows, int cols, int n_folds, float l
     float **d_train_set;
     cudaMalloc(&d_train_set, (rows - fold_size) * sizeof(float *));
 
+    for (int i = 0; i < (rows-fold_size); i++) {
+        float *d_row;
+        cudaMalloc(&d_row, cols * sizeof(float)); // aloca linha na GPU
+        cudaMemcpy(&d_train_set[i], &d_row, sizeof(float *), cudaMemcpyHostToDevice); // copia ponteiro da linha para vetor
+    }
+
     // === 3. Alocar test_set ===
     float **d_test_set;
     cudaMalloc(&d_test_set, fold_size * sizeof(float *));
+
+    for (int i = 0; i < fold_size; i++) {
+        float *d_row;
+        cudaMalloc(&d_row, cols * sizeof(float)); // aloca linha na GPU
+        cudaMemcpy(&d_test_set[i], &d_row, sizeof(float *), cudaMemcpyHostToDevice); // copia ponteiro da linha para vetor
+    }
 
     // === 4. Alocar expected ===
     int *d_expected;
@@ -144,12 +164,79 @@ float evaluate_network(float **dataset, int rows, int cols, int n_folds, float l
     cudaMalloc(&gpu_params, sizeof(EvalParams));
     cudaMemcpy(gpu_params, &cpu_params, sizeof(EvalParams), cudaMemcpyHostToDevice);
 
-    evaluate_kernel<<<blocks, threads>>>(gpu_params);
+    Layer *d_layer;
+    cudaMalloc(&d_layer, 2 * sizeof(Layer));
+
+    Neuron *d_hiddenNeurons;
+    cudaMalloc(&d_hiddenNeurons, n_hidden * sizeof(Neuron));
+
+    Neuron *d_outputNeurons;
+    cudaMalloc(&d_outputNeurons, 2 * sizeof(Neuron));
+
+    float **d_hiddenWeights;
+    cudaMalloc(&d_hiddenWeights, (n_hidden) * sizeof(float *));
+
+    for (int i = 0; i < n_hidden; i++) {
+        float *d_row;
+        cudaMalloc(&d_row, cols * sizeof(float)); // aloca linha na GPU
+        cudaMemcpy(&d_hiddenWeights[i], &d_row, sizeof(float *), cudaMemcpyHostToDevice); // copia ponteiro da linha para vetor
+    }
+
+    float **d_outputWeights;
+    cudaMalloc(&d_outputWeights, 2 * sizeof(float *));
+
+    for (int i = 0; i < 2; i++) {
+        float *d_row;
+        cudaMalloc(&d_row, (n_hidden+1) * sizeof(float)); // aloca linha na GPU
+        cudaMemcpy(&d_outputWeights[i], &d_row, sizeof(float *), cudaMemcpyHostToDevice); // copia ponteiro da linha para vetor
+    }
+
+    InitializeParams cpu_initialize;
+    cpu_initialize.layers = d_layer;
+    cpu_initialize.hidden_neurons = d_hiddenNeurons;
+    cpu_initialize.output_neurons = d_outputNeurons;
+    cpu_initialize.hidden_weights = d_hiddenWeights;
+    cpu_initialize.output_weights = d_outputWeights;
+
+    InitializeParams *gpu_initialize;
+    cudaMalloc(&gpu_initialize, sizeof(InitializeParams));
+    cudaMemcpy(gpu_initialize, &cpu_initialize, sizeof(InitializeParams), cudaMemcpyHostToDevice);
+
+    float *expected;
+    cudaMalloc(&expected, 2 * sizeof(float));
+
+    float **arrayNewInputs;
+    cudaMalloc(&arrayNewInputs, 2 * sizeof(float *));
+
+    for (int i = 0; i < 2; i++) {
+        float *d_row;
+        if(i == 0)
+            cudaMalloc(&d_row, (n_hidden) * sizeof(float)); // aloca linha na GPU
+        else
+            cudaMalloc(&d_row, 2 * sizeof(float)); // aloca linha na GPU
+        cudaMemcpy(&arrayNewInputs[i], &d_row, sizeof(float *), cudaMemcpyHostToDevice); // copia ponteiro da linha para vetor
+    }
+
+    float **arrayNewIn;
+    cudaMalloc(&arrayNewIn, 2 * sizeof(float *));
+
+    for (int i = 0; i < 2; i++) {
+        float *d_row;
+        if(i == 0)
+            cudaMalloc(&d_row, (n_hidden) * sizeof(float)); // aloca linha na GPU
+        else
+            cudaMalloc(&d_row, 2 * sizeof(float)); // aloca linha na GPU
+        cudaMemcpy(&arrayNewIn[i], &d_row, sizeof(float *), cudaMemcpyHostToDevice); // copia ponteiro da linha para vetor
+    }
+
+    evaluate_kernel<<<blocks, threads>>>(gpu_params, gpu_initialize, expected, arrayNewInputs, arrayNewIn);
     cudaDeviceSynchronize();
 
-    cudaMemcpy(h_accuracies, d_accuracies, n_folds * sizeof(float), cudaMemcpyDeviceToHost);
+    // cudaMemcpy(&cpu_params, gpu_params, sizeof(EvalParams), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_accuracies, cpu_params.accuracies, n_folds * sizeof(float), cudaMemcpyDeviceToHost);
 
     for (int i = 0; i < n_folds; i++){
+        // printf("%.2f\n", h_accuracies[i]);
         sum_accuracy += h_accuracies[i];
     }
 
@@ -181,19 +268,18 @@ float evaluate_network(float **dataset, int rows, int cols, int n_folds, float l
     cudaFree(d_test_set);
     cudaFree(d_expected);
     cudaFree(d_predicted);
+    cudaFree(gpu_params);
     free(h_accuracies);
 
     return sum_accuracy / (float)n_folds;
 }
 // --------------------------------------------
 
-__global__ void evaluate_kernel(EvalParams *evalParams)
+__global__ void evaluate_kernel(EvalParams *evalParams, InitializeParams *initialize_params, float *expected, float **arrayNewInputs, float **arrayNewIn)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= evalParams->n_folds){
-        evalParams->accuracies[i] = 0.0;
-        return;
-    }
+    
+    // evalParams->accuracies[i] = (float)i;
     
     int fold_size = evalParams->rows / evalParams->n_folds;
     int start = i * fold_size;
@@ -204,23 +290,23 @@ __global__ void evaluate_kernel(EvalParams *evalParams)
     
     for (int r = 0; r < evalParams->rows; r++) {
         if (r >= start && r < end) {
-            int tidx = test_idx++;
             for (int c = 0; c < evalParams->cols; c++) {
-                evalParams->test_set[tidx][c] = evalParams->dataset[r][c];
+                evalParams->test_set[test_idx][c] = evalParams->dataset[r][c];
             }
-            evalParams->expected[tidx] = (int)evalParams->test_set[tidx][evalParams->cols - 1];
-            evalParams->test_set[tidx][evalParams->cols - 1] = -1.0f;
+            evalParams->expected[test_idx] = (int)evalParams->test_set[test_idx][evalParams->cols - 1];
+            evalParams->test_set[test_idx][evalParams->cols - 1] = -1;
+            test_idx++;
         } else {
             evalParams->train_set[train_idx++] = evalParams->dataset[r];
         }
     }
     
     Network net;
-    initialize_network(&net, evalParams->cols - 1, evalParams->n_hidden, n_outputs);
-    train(&net, evalParams->train_set, evalParams->rows - fold_size, evalParams->l_rate, evalParams->n_epoch, n_outputs, i);
+    initialize_network(&net, evalParams->cols - 1, evalParams->n_hidden, n_outputs, initialize_params);
+    train(&net, evalParams->train_set, evalParams->rows - fold_size, evalParams->l_rate, evalParams->n_epoch, n_outputs, i, expected, arrayNewInputs, arrayNewIn);
 
     for (int j = 0; j < fold_size; j++) {
-        evalParams->predicted[j] = predict(&net, evalParams->test_set[j]);
+        evalParams->predicted[j] = predict(&net, evalParams->test_set[j], arrayNewInputs);
     }
 
     float acc = accuracy_metric(evalParams->expected, evalParams->predicted, fold_size);
@@ -233,6 +319,7 @@ __global__ void evaluate_kernel(EvalParams *evalParams)
     // free(expected);
     free_network(&net);
 }
+
 // carrega os dados do CSV como uma matriz de floats
 float **load_csv_data(const char *filename, int *rows, int *cols)
 {
@@ -308,19 +395,19 @@ void print_data(float **data, int rows, int cols)
 
 // --------------------------------------------
 
-__device__ void initialize_network(Network *net, int n_inputs, int n_hidden, int n_outputs)
+__device__ void initialize_network(Network *net, int n_inputs, int n_hidden, int n_outputs, InitializeParams *params)
 {
     curandState state;
     // REDE NEURAL COM 2 CAMADAS
     net->n_layers = 2;
-    net->layers = (Layer *)malloc(2 * sizeof(Layer));
+    net->layers = params->layers;
 
     net->layers[0].n_neurons = n_hidden;
-    net->layers[0].neurons = (Neuron *)malloc(n_hidden * sizeof(Neuron));
+    net->layers[0].neurons = params->hidden_neurons;
     for (int i = 0; i < n_hidden; i++)
     {
         net->layers[0].neurons[i].n_weights = n_inputs + 1;
-        net->layers[0].neurons[i].weights = (float *)malloc((n_inputs + 1) * sizeof(float));
+        net->layers[0].neurons[i].weights = params->hidden_weights[i];
         for (int j = 0; j < n_inputs + 1; j++)
         {
             curand_init(1234, j, 0, &state);
@@ -329,11 +416,11 @@ __device__ void initialize_network(Network *net, int n_inputs, int n_hidden, int
     }
 
     net->layers[1].n_neurons = n_outputs;
-    net->layers[1].neurons = (Neuron *)malloc(n_outputs * sizeof(Neuron));
+    net->layers[1].neurons = params->output_neurons;
     for (int i = 0; i < n_outputs; i++)
     {
         net->layers[1].neurons[i].n_weights = n_hidden + 1;
-        net->layers[1].neurons[i].weights = (float *)malloc((n_hidden + 1) * sizeof(float));
+        net->layers[1].neurons[i].weights = params->output_weights[i];
         for (int j = 0; j < n_hidden + 1; j++)
         {
             curand_init(1234, j, 0, &state);
@@ -342,20 +429,20 @@ __device__ void initialize_network(Network *net, int n_inputs, int n_hidden, int
     }
 }
 
-__device__ void forward_propagate(Network *net, float *inputs)
+__device__ void forward_propagate(Network *net, float *inputs, float **arrayNewInputs)
 {
     float *in = inputs; // inicia com os inputs
 
     for (int l = 0; l < net->n_layers; l++)
     {
         Layer *layer = &net->layers[l];
-        float *new_inputs = (float *)malloc(layer->n_neurons * sizeof(float));
+        float *new_inputs = arrayNewInputs[l];
 
         for (int n = 0; n < layer->n_neurons; n++)
         {
             Neuron *neuron = &layer->neurons[n];
 
-             // começa a ativacao com o bias (ultimo peso)
+            // começa a ativacao com o bias (ultimo peso)
             neuron->activation = neuron->weights[neuron->n_weights - 1];
             for (int j = 0; j < neuron->n_weights - 1; j++) 
             {
@@ -398,7 +485,7 @@ __device__ void backward_propagate_error(Network *net, float *expected)
     }
 }
 
-__device__ void update_weights(Network *net, float *inputs, float l_rate)
+__device__ void update_weights(Network *net, float *inputs, float l_rate, float **arrayNewIn)
 {
     float *in = inputs; // inicia com os inputs
 
@@ -416,7 +503,7 @@ __device__ void update_weights(Network *net, float *inputs, float l_rate)
         }
 
         // prepara os inputs para a proxima camada
-        float *new_in = (float *)malloc(layer->n_neurons * sizeof(float));
+        float *new_in = arrayNewIn[l];
         for (int i = 0; i < layer->n_neurons; i++)
         {
             new_in[i] = layer->neurons[i].output;
@@ -426,10 +513,9 @@ __device__ void update_weights(Network *net, float *inputs, float l_rate)
     }
 }
 
-__device__ void train(Network *net, float **train_data, int train_rows, float l_rate, int n_epoch, int n_outputs, int id)
+__device__ void train(Network *net, float **train_data, int train_rows, float l_rate, int n_epoch, int n_outputs, int id, float *expected, float **arrayNewInputs, float **arrayNewIn)
 {
-    int cols = net->layers[0].neurons[0].n_weights - 1; 
-    float *expected = (float *)malloc(n_outputs * sizeof(float));
+    int cols = net->layers[0].neurons[0].n_weights - 1;
 
     for (int epoch = 0; epoch < n_epoch; epoch++)
     {
@@ -438,7 +524,7 @@ __device__ void train(Network *net, float **train_data, int train_rows, float l_
         for (int r = 0; r < train_rows; r++)
         {
             float *row = train_data[r];
-            forward_propagate(net, row);
+            forward_propagate(net, row, arrayNewInputs);
 
             for (int i = 0; i < n_outputs; i++)
                 expected[i] = 0.0f;
@@ -452,7 +538,7 @@ __device__ void train(Network *net, float **train_data, int train_rows, float l_
             }
 
             backward_propagate_error(net, expected);
-            update_weights(net, row, l_rate);
+            update_weights(net, row, l_rate, arrayNewIn);
         }
 
 #if VERBOSE > 0
@@ -462,12 +548,12 @@ __device__ void train(Network *net, float **train_data, int train_rows, float l_
 #endif
     }
 
-    free(expected);
+    // free(expected);
 }
 
-__device__ int predict(Network *net, float *input)
+__device__ int predict(Network *net, float *input, float **arrayNewInputs)
 {
-    forward_propagate(net, input);
+    forward_propagate(net, input, arrayNewInputs);
     Layer *output_layer = &net->layers[net->n_layers - 1];
 
     int max_i = 0;
