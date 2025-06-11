@@ -66,23 +66,24 @@ __device__ float accuracy_metric(int *expected, int *predicted, int size);
 __device__ void forward_propagate(Network *net, float *inputs, float **arrayNewInputs);
 __device__ void backward_propagate_error(Network *net, float *expected);
 __device__ void update_weights(Network *net, float *inputs, float l_rate);
-float evaluate_network(float **dataset, int rows, int cols, int n_folds, float l_rate, int n_epoch, int n_hidden);
+float evaluate_network(float **dataset, int rows, int cols, int n_folds, float l_rate, int n_epoch, int n_hidden, int num_threads);
 
 float **load_csv_data(const char *filename, int *rows, int *cols);
 void normalize_data(float **data, int rows, int cols);
 
 int main(int argc, char **argv)
 {
-    if (argc < 6) {
-        printf("Uso: %s <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>\n", argv[0]);
+    if (argc < 7) {
+        printf("Uso: %s <num_threads> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>\n", argv[0]);
         return 1;
     }
 
-    char *dataset_file = argv[1];
-    int n_folds = atoi(argv[2]);
-    float l_rate = atof(argv[3]);
-    int n_epoch = atoi(argv[4]);
-    int n_hidden = atoi(argv[5]);
+    int num_threads = atoi(argv[1]);
+    char *dataset_file = argv[2];
+    int n_folds = atoi(argv[3]);
+    float l_rate = atof(argv[4]);
+    int n_epoch = atoi(argv[5]);
+    int n_hidden = atoi(argv[6]);
 
     srand(time(NULL));
 
@@ -90,18 +91,18 @@ int main(int argc, char **argv)
     float **dataset = load_csv_data(dataset_file, &rows, &cols);
     normalize_data(dataset, rows, cols);
     
-    float mean_accuracy = evaluate_network(dataset, rows, cols, n_folds, l_rate, n_epoch, n_hidden);
+    float mean_accuracy = evaluate_network(dataset, rows, cols, n_folds, l_rate, n_epoch, n_hidden, num_threads);
     printf("Acurácia média: %.3f\n", mean_accuracy);
     return 0;
 }
 
-float evaluate_network(float **dataset, int rows, int cols, int n_folds, float l_rate, int n_epoch, int n_hidden)
+float evaluate_network(float **dataset, int rows, int cols, int n_folds, float l_rate, int n_epoch, int n_hidden, int num_threads)
 {
     float sum_accuracy = 0.0f;
     float *d_accuracies, *h_accuracies = (float *)malloc(n_folds * sizeof(float));
     cudaMalloc(&d_accuracies, n_folds * sizeof(float));
 
-    int threads = 256;
+    int threads = num_threads;
     int blocks = (n_folds + threads - 1) / threads;
 
     int fold_size = rows / n_folds;
