@@ -104,6 +104,13 @@ float evaluate_network(float **dataset, int rows, int cols, int n_folds, float l
     int fold_size = rows / n_folds;
     const int n_outputs = 2; // no nosso caso so tem as classes renda anual <=50K e >50K
 
+	/*
+	 * Foi analisado pelo grupo que este seria o melhor ponto de paralelização, pois
+	 * ao paralelizar as funções e operações na rede, considerando que as redes
+	 * utilizadas são pequenas, o overhead se torna maior do que o ganho esperado. Por
+	 * fim, este ponto do código, onde são utilizadas várias redes, se torna mais 
+	 * eficiente ao paralelizar, pois cada rede será executada em paralelo. 
+	*/
 #pragma omp parallel for reduction(+ : sum_accuracy)
     for (int i = 0; i < n_folds; i++)
     {

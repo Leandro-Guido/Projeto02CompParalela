@@ -29,7 +29,7 @@
 float *load_csv_data(const char *filename, int *rows, int *cols);
 void normalize_data(float *data, int rows, int cols);
 float accuracy_metric(int *expected, int *predicted, int size);
-float evaluate_network(float *dataset, int rows, int cols, int n_folds, float l_rate, int n_epoch, int n_hidden, int num_threads);
+float evaluate_network(float *dataset, int rows, int cols, int n_folds, float l_rate, int n_epoch, int n_hidden, int num_teams);
 float rand_weight() { return (float)rand() / (float)RAND_MAX; }
 
 // aproximação de expf(x) válida para -10 <= x <= 10
@@ -146,6 +146,7 @@ float *load_csv_data(const char *filename, int *rows, int *cols)
     return data;
 }
 
+// normalizar os dados para ficarem entre 0, 1
 void normalize_data(float *data, int rows, int cols)
 {
     float *mins = malloc(cols * sizeof(float));
@@ -185,7 +186,7 @@ float accuracy_metric(int *expected, int *predicted, int size)
     return 100.0f * correct / size;
 }
 
-float evaluate_network(float *dataset, int rows, int cols, int n_folds, float l_rate, int n_epoch, int n_hidden, int num_threads)
+float evaluate_network(float *dataset, int rows, int cols, int n_folds, float l_rate, int n_epoch, int n_hidden, int num_teams)
 {
     /*
         INICIALIZAÇÃO DOS DADOS E NETWORK
@@ -211,7 +212,7 @@ float evaluate_network(float *dataset, int rows, int cols, int n_folds, float l_
     activations = malloc(TOTAL_NEURONS * sizeof(float));
     deltas = malloc(TOTAL_NEURONS * sizeof(float));
     n_weights = malloc(TOTAL_NEURONS * sizeof(int));
-    float *layer_buffer = malloc(TOTAL_NEURONS * sizeof(float)); // Para auxiliar no forward propagation e update_weights
+    float *layer_buffer = malloc(TOTAL_NEURONS * sizeof(float)); // para auxiliar no forward propagation e update_weights
 
     for (int i = 0; i < n_folds * n_layers; i++)
     {
@@ -284,6 +285,9 @@ float evaluate_network(float *dataset, int rows, int cols, int n_folds, float l_
 
 /*
     TREINO DA NETWORK
+    O pralelismo ser aqui é mesma explicação do main.c
+    só que foi todas as alocações de memória e inicializações foram
+    colocadas antes do loop parallel para executar com offload sem problemas
 */
 #pragma omp target data                                           \
     map(to : train_sets[0 : n_folds * (rows - fold_size) * cols], \
@@ -296,10 +300,10 @@ float evaluate_network(float *dataset, int rows, int cols, int n_folds, float l_
             layer_buffer[0 : TOTAL_NEURONS],                      \
             expected_output[0 : n_outputs])
     {
-#pragma omp target teams distribute parallel for thread_limit(num_threads)
+#pragma omp target teams distribute parallel for num_teams(num_teams) thread_limit(1)
         for (int i = 0; i < n_folds; i++)
         {
-            // printf("nteams: %d, th lim: %d\n", omp_get_num_teams(), omp_get_thread_limit());
+            printf("fold: %d, team: %d, nteams: %d, th lim: %d\n", i, omp_get_team_num(), omp_get_num_teams(), omp_get_thread_limit());
             for (int epoch = 0; epoch < n_epoch; epoch++)
             {
                 float sum_error = 0.0f;
@@ -526,11 +530,11 @@ int main(int argc, char **argv)
     printf("Inicio\n");
     if (argc < 7)
     {
-        printf("Uso: %s <num_threads> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>\n", argv[0]);
+        printf("Uso: %s <num_teams> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>\n", argv[0]);
         return 1;
     }
 
-    int num_threads = atoi(argv[1]);
+    int num_teams = atoi(argv[1]);
     char *dataset_file = argv[2];
     int n_folds = atoi(argv[3]);
     float l_rate = atof(argv[4]);
@@ -551,7 +555,7 @@ int main(int argc, char **argv)
     if (VERBOSE)
         printf("Dataset carregado com %d linhas e %d colunas.\n", rows, cols);
 
-    float mean_accuracy = evaluate_network(dataset, rows, cols, n_folds, l_rate, n_epoch, n_hidden, num_threads);
+    float mean_accuracy = evaluate_network(dataset, rows, cols, n_folds, l_rate, n_epoch, n_hidden, num_teams);
     printf("Acuracia media: %.3f\n", mean_accuracy);
 
     free(dataset);
