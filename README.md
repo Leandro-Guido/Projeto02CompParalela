@@ -35,13 +35,22 @@ v) ler o lembrete
 
 vi) COMPILAÇÃO E EXECUÇÃO DOS CÓDIGOS
 
-OpenMP:
+## OpenMP CPU:
 
-    mudar os valores entre parentesis
+    FLAGS DE COMPILAÇÃO:
+    1) "-DVERBOSE=<num>" (1 = mostra execução por epocas, 2 = mostra também o resultado na network inteira)
+    2) "-DSLOW=<num>" (1 = desacelera o código para melhorar a visualização da execução)
 
-    COMPILAR: g++ -O3 -fopenmp -std=c++11 -DSCHEDULE="schedule(dynamic, 1)" -DVERBOSE=1 main.cpp NeuralNetwork.cpp -o (nome).exe
-    FLAG -DVERBOSE (1 = mostra execução por epocas, 2 = mostra também o resultado na network inteira)
+    COMPILAR: gcc -fopenmp -o cpu.exe main.c
+    EXECUTAR: time ./cpu.exe <num_threads> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>
+    ex.:      time ./cpu.exe 1 "adult_1.csv" 8 0.01 50 15
 
-    EXECUTAR: time ./(nome).exe <num_threads> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>
-    ex.:      time ./seq.exe 1 "adult_1.csv" 4 0.3 70 5
-    no caso do parcode é indicado filtrar para usar threads diferentes da 0 e da 1: time taskset -c 2-4 ./seq.exe 2 "adult_1.csv" 8 0.01 100 5
+## OpenMP GPU:
+
+    FLAGS DE COMPILAÇÃO:
+    1) "-DVERBOSE=<num>" (1 = mostra execução por epocas, 2 = mostra também o resultado na network inteira)
+    2) "-DSLOW=<num>" (1 = desacelera o código para melhorar a visualização da execução)
+
+    COMPILAR: gcc -fopenmp -fcf-protection=none -fno-stack-protector -no-pie -o gpu.exe main_gpu.c
+    EXECUTAR: time ./gpu.exe <num_teams> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>
+    ex.:      time ./gpu.exe 8 "adult_1.csv" 8 0.01 50 15

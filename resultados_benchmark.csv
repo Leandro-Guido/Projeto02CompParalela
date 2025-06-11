@@ -1,0 +1,9 @@
+tipo,execucao,n_threads,folds,tempo_s
+forte,GPU,8,64,14.020531244
+forte,GPU,16,64,13.438985118
+forte,GPU,32,64,13.016378944
+forte,GPU,64,64,13.527660076
+fraca,GPU,1,16,11.761483374
+fraca,GPU,2,32,12.520114469
+fraca,GPU,4,64,13.401495670
+fraca,GPU,8,128,17.477252904
