@@ -68,35 +68,35 @@ executar() {
     sleep 1
 }
 
-# echo "### SEQUENCIAL (CPU)"
-# for fold in "${SEQUENCIAL_FOLDS[@]}"; do
-#     executar "seq" "CPU" 1 1 $fold $EXEC_CPU
-# done
+echo "### SEQUENCIAL (CPU)"
+for fold in "${SEQUENCIAL_FOLDS[@]}"; do
+    executar "seq" "CPU" 1 1 $fold $EXEC_CPU
+done
 
 echo "### ESCALABILIDADE FORTE"
-# for t in "${FORTE_CPU[@]}"; do
-#     executar "forte" "CPU" 1 $t $FOLDS_FORTE $EXEC_CPU
-# done
-# for t in "${FORTE_GPU[@]}"; do
-#     executar "forte" "GPU" 1 $t $FOLDS_FORTE $EXEC_GPU
-# done
-# for t in "${FORTE_CUDA[@]}"; do
-#     executar "forte" "CUDA" 1 $t $FOLDS_FORTE $EXEC_CUDA
-# done
+for t in "${FORTE_CPU[@]}"; do
+    executar "forte" "CPU" 1 $t $FOLDS_FORTE $EXEC_CPU
+done
+for t in "${FORTE_GPU[@]}"; do
+    executar "forte" "GPU" 1 $t $FOLDS_FORTE $EXEC_GPU
+done
+for t in "${FORTE_CUDA[@]}"; do
+    executar "forte" "CUDA" 1 $t $FOLDS_FORTE $EXEC_CUDA
+done
 for i in "${!FORTE_MPI_PROC[@]}"; do
     executar "forte" "MPI" "${FORTE_MPI_PROC[$i]}" "${FORTE_MPI_THREADS[$i]}" $FOLDS_FORTE $EXEC_MPI
 done
 
 echo "### ESCALABILIDADE FRACA"
-# for i in "${!FRACA_CPU_THREADS[@]}"; do
-#     executar "fraca" "CPU" 1 "${FRACA_CPU_THREADS[$i]}" "${FRACA_CPU_FOLDS[$i]}" $EXEC_CPU
-# done
-# for i in "${!FRACA_GPU_TEAMS[@]}"; do
-#     executar "fraca" "GPU" 1 "${FRACA_GPU_TEAMS[$i]}" "${FRACA_GPU_FOLDS[$i]}" $EXEC_GPU
-# done
-# for i in "${!FRACA_CUDA_TEAMS[@]}"; do
-#     executar "fraca" "CUDA" 1 "${FRACA_CUDA_TEAMS[$i]}" "${FRACA_CUDA_FOLDS[$i]}" $EXEC_CUDA
-# done
+for i in "${!FRACA_CPU_THREADS[@]}"; do
+    executar "fraca" "CPU" 1 "${FRACA_CPU_THREADS[$i]}" "${FRACA_CPU_FOLDS[$i]}" $EXEC_CPU
+done
+for i in "${!FRACA_GPU_TEAMS[@]}"; do
+    executar "fraca" "GPU" 1 "${FRACA_GPU_TEAMS[$i]}" "${FRACA_GPU_FOLDS[$i]}" $EXEC_GPU
+done
+for i in "${!FRACA_CUDA_TEAMS[@]}"; do
+    executar "fraca" "CUDA" 1 "${FRACA_CUDA_TEAMS[$i]}" "${FRACA_CUDA_FOLDS[$i]}" $EXEC_CUDA
+done
 for i in "${!FRACA_MPI_PROC[@]}"; do
     executar "fraca" "MPI" "${FRACA_MPI_PROC[$i]}" "${FRACA_MPI_THREADS[$i]}" "${FRACA_MPI_FOLDS[$i]}" $EXEC_MPI
 done

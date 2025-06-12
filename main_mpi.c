@@ -232,7 +232,6 @@ TREINO DA NETWORK
 #pragma omp parallel for
     for (int f = rank; f < n_folds; f += size)
     {
-
         for (int epoch = 0; epoch < n_epoch; epoch++)
         {
             float sum_error = 0.0f;
