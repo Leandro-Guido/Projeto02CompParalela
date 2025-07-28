@@ -1,42 +1,57 @@
 Leandro Guido e Matheus Sinis
 
-ii) Código da MLP sequencial foi retirado de: https://github.com/Cr4ckC4t/neural-network-from-scratch/tree/main
+O Código da MLP sequencial foi adaptado de: https://github.com/Cr4ckC4t/neural-network-from-scratch/tree/main
 
-iii) PARALELIZAÇÃO OPENMP COMENTADA EM main.cpp -> função evaluate_network()
+A explicação da paralelização está comentada em cada código
 
-iv) EXECUÇÃO OpenMP NO PARCODE (compilação e tempos)
+A execução foi feita em um notebook com as seguintes especificações:
 
-1 thread:
+Processador:
+    Intel Core i5 - 13th Gen (2,10 GHz)
+    12 Threads
 
-real    0m14.646s
-user    0m14.605s
-sys     0m0.036s
+Memória:
+    16GB (DDR4, 3200 MHz)
+    
+GPU:
+    RTX 3050 
+    VRAM: 6 GB DDR6
 
-2 threads:
+Todas as execuções podem ser encontradas em resultados_benchmark.csv
 
-real    0m19.969s
-user    0m34.381s
-sys     0m0.048s
+COMPILAÇÃO E EXECUÇÃO DOS CÓDIGOS
 
-4 threads:
+## OpenMP CPU:
 
-real    0m12.526s
-user    0m35.688s
-sys     0m0.068s
+    FLAGS DE COMPILAÇÃO:
+    1) "-DVERBOSE=<num>" (1 = mostra execução por epocas, 2 = mostra também o resultado na network inteira)
+    2) "-DSLOW=<num>" (1 = desacelera o código para melhorar a visualização da execução)
 
+    COMPILAR: gcc -fopenmp -o cpu.exe main.c
+    EXECUTAR: ./cpu.exe <num_threads> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>
+    ex.:      ./cpu.exe 1 "adult_1.csv" 64 0.01 30 5
 
-8 threads:
+## OpenMP GPU:
 
-real    0m12.399s
-user    0m35.421s
-sys     0m0.100s
+    FLAGS DE COMPILAÇÃO:
+    1) "-DVERBOSE=<num>" (1 = mostra execução por epocas, 2 = mostra também o resultado na network inteira)
+    2) "-DSLOW=<num>" (1 = desacelera o código para melhorar a visualização da execução)
 
-v) ler o lembrete
+    COMPILAR: gcc -fopenmp -fcf-protection=none -fno-stack-protector -no-pie -o gpu.exe main_gpu.c
+    EXECUTAR: ./gpu.exe <num_teams> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>
+    ex.:      ./gpu.exe 8 "adult_1.csv" 64 0.01 30 5
 
-vi) COMPILAÇÃO E EXECUÇÃO DOS CÓDIGOS
-OpenMP:
-    CONFIGURAR: trocar na função main (main.cpp) o número de threads omp_set_num_threads(<número de threads>);
-    COMPILAR: g++ -O3 -Wall -Wpedantic -fopenmp main.cpp NeuralNetwork.cpp -o <nome>.exe
-    EXECUTAR: time ./<nome>.exe
+## MPI:
 
-LEMBRETE AO PROFESSOR: Na hora da apresentação nós não tínhamos feito ainda os slides e nem a parte do MPI (todo o resto foi apresentado), a tentativa do MPI está junto dos outros códigos como main_mpi.cpp (não conseguimos fazer rodar sem estourar a memória).
+    FLAGS DE COMPILAÇÃO:
+    1) "-DVERBOSE=<num>" (1 = mostra execução por epocas)
+
+    COMPILAR: mpicc -fopenmp -o main_mpi.exe main_mpi.c
+    EXECUTAR: mpirun -np <num_proc> ./main_mpi.exe <num_teams> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>
+    ex:       mpirun -np 1 ./main_mpi.exe 4 adult_1.csv 64 0.01 30 5
+
+## CUDA:
+
+    COMPILAR: nvcc -arch=sm_61 CUDA.cu -o cuda.exe
+    EXECUTAR: ./cuda.exe <num_teams> <dataset.csv> <n_folds> <l_rate> <n_epoch> <n_hidden>
+    ex:       ./cuda.exe 8 "adult_1.csv" 64  0.01 30 5
